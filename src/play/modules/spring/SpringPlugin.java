@@ -3,11 +3,15 @@ package play.modules.spring;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Map;
+import java.util.List;
 
 import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.beans.factory.config.PropertyPlaceholderConfigurer;
 import org.springframework.beans.factory.xml.XmlBeanDefinitionReader;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.ClassPathBeanDefinitionScanner;
 import org.springframework.context.support.GenericApplicationContext;
 import org.xml.sax.InputSource;
@@ -59,15 +63,29 @@ public class SpringPlugin extends PlayPlugin implements BeanSource {
 
     @Override
     public void onApplicationStart() {
+        Collection<VirtualFile> moduleDirs = Play.modules.values();
+        List<VirtualFile> xmlFiles = new ArrayList<VirtualFile>();
+        for(VirtualFile moduleDir : moduleDirs)
+        {
+            VirtualFile context = getContextFile(moduleDir);
+            if(context != null)
+            {
+                xmlFiles.add(context);
+            }
+        }
+
+        Logger.info(Play.classloader.getResource("application-context.xml").toString());
         URL url = Play.classloader.getResource(Play.id + ".application-context.xml");
         if (url == null) {
             url = Play.classloader.getResource("application-context.xml");
         }
         if (url != null) {
             InputStream is = null;
+            InputStream pis = null;
             try {
                 Logger.debug("Starting Spring application context");
                 applicationContext = new GenericApplicationContext();
+                //applicationContext = new GenericApplicationContext(parentApplicationContext);
                 applicationContext.setClassLoader(Play.classloader);
                 XmlBeanDefinitionReader xmlReader = new XmlBeanDefinitionReader(applicationContext);
                 if (Play.configuration.getProperty(PLAY_SPRING_NAMESPACE_AWARE,
@@ -86,7 +104,7 @@ public class SpringPlugin extends PlayPlugin implements BeanSource {
                     Logger.debug("PropertyPlaceholderConfigurer with Play properties NOT added");
                 }
                 //
-                //	Check for component scan 
+                //    Check for component scan
                 //
                 boolean doComponentScan = Play.configuration.getProperty(PLAY_SPRING_COMPONENT_SCAN_FLAG, "false").equals("true");
                 Logger.debug("Spring configuration do component scan: " + doComponentScan);
@@ -98,10 +116,17 @@ public class SpringPlugin extends PlayPlugin implements BeanSource {
                     scanner.scan(scanBasePackage.split(","));
                     Logger.debug("... component scanning complete");
                 }
-
+                ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
+                for(VirtualFile file : xmlFiles)
+                {
+                    Logger.info("reading " + xmlFiles.toString());
+                    pis = file.inputstream();
+                    xmlReader.loadBeanDefinitions(new InputSource(pis));
+                    Logger.info("refreshing applicationContext ");
+                    Thread.currentThread().setContextClassLoader(Play.classloader);
+                }
                 is = url.openStream();
                 xmlReader.loadBeanDefinitions(new InputSource(is));
-                ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
                 Thread.currentThread().setContextClassLoader(Play.classloader);
                 try {
                     applicationContext.refresh();
@@ -126,9 +151,30 @@ public class SpringPlugin extends PlayPlugin implements BeanSource {
                         Logger.error(e, "Can't close spring config file stream");
                     }
                 }
+                if (pis != null) {
+                    try {
+                        pis.close();
+                    } catch (IOException e) {
+                        Logger.error(e, "Can't close module spring config file stream");
+                    }
+                }
             }
         }
         Injector.inject(this);
+    }
+
+    private VirtualFile getContextFile(VirtualFile moduleDir) {
+        VirtualFile contextFile = null;
+
+        VirtualFile confDir = moduleDir.child("conf");
+        if (confDir != null && confDir.isDirectory()) {
+            contextFile = confDir.child(moduleDir.getName() + ".application-context.xml");
+            if(contextFile.exists()) {
+                Logger.info("Spring config found: " + contextFile.relativePath());
+                return contextFile;
+            }
+        }
+        return null;
     }
 
     public <T> T getBeanOfType(Class<T> clazz) {
